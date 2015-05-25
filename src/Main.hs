@@ -7,20 +7,14 @@ import Control.Applicative ((<$>))
 import Data.Maybe (fromJust)
 import Network.Browser
 import Network.HTTP
-import Network.HTTP.Proxy (parseProxy)
+--import Network.HTTP.Proxy (parseProxy)
 import Data.Text hiding (replicate, foldl)
 import Network.URI (parseURI)
 import Data.Aeson
 import Control.Monad (mzero)
+import Settings
 
 import qualified Data.ByteString.Lazy.Char8 as BL
-
-data Settings = Settings
-    { settingsProcessQueue :: Text
-    , settingsResultsQueue :: Text
-    , settingsExchange :: Text
-    , settingsProcessExchangeKey :: Text
-    , settingsResultsExchangeKey :: Text }
 
 data CrawlRequest = CrawlRequest
     { url :: String }
@@ -54,15 +48,6 @@ command = do
         (cmd:[]) -> return cmd
         otherwise -> error "usage: akkorokamui [command]"
 
-defaultSettings :: Settings
-defaultSettings =
-    Settings
-        { settingsProcessQueue = "akkorokamui_new"
-        , settingsResultsQueue = "akkorokamui_results"
-        , settingsExchange = "akkorokamui_exchange"
-        , settingsProcessExchangeKey = "new"
-        , settingsResultsExchangeKey = "results" }
-
 createConsumer :: IO ()
 createConsumer = do
     putStrLn $ "start"
@@ -83,7 +68,6 @@ setupQueues chan = do
     bindQueue chan resultsQueueName msgExchangeName resultsExchangeKey
     consumeMsgs chan processQueueName Ack consumerCallback
   where
-    settings = defaultSettings
     processQueueName = settingsProcessQueue settings
     resultsQueueName = settingsResultsQueue settings
     msgExchangeName = settingsExchange settings
@@ -155,7 +139,6 @@ publishResult env crawlRequest response = do
             }
         )
   where
-    settings = defaultSettings
     processQueueName = settingsProcessQueue settings
     resultsQueueName = settingsResultsQueue settings
     msgExchangeName = settingsExchange settings
