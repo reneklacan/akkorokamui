@@ -10,31 +10,31 @@ import Network.HTTP
 --import Network.HTTP.Proxy (parseProxy)
 import Data.Text hiding (replicate, foldl)
 import Network.URI (parseURI)
-import Data.Aeson
+import Data.Aeson hiding (Result)
 import Control.Monad (mzero)
 import Settings
 
 import qualified Data.ByteString.Lazy.Char8 as BL
 
-data CrawlRequest = CrawlRequest
-    { url :: String }
+data Job = Job
+    { jobUrl :: String }
 
-instance FromJSON CrawlRequest where
-    parseJSON (Object v) = CrawlRequest <$> v .: "url"
+instance FromJSON Job where
+    parseJSON (Object v) = Job <$> v .: "url"
     parseJSON _ = mzero
 
-instance ToJSON CrawlRequest where
-    toJSON (CrawlRequest url) =
+instance ToJSON Job where
+    toJSON (Job url) =
         object ["url" .= url]
 
-data CrawlResponse = CrawlResponse
-    { originalRequest :: CrawlRequest
-    , body :: Text
-    , code :: Int }
+data Result = Result
+    { resultJob :: Job
+    , resultBody :: Text
+    , resultCode :: Int }
 
-instance ToJSON CrawlResponse where
-    toJSON (CrawlResponse originalRequest body code) =
-        object ["body" .= body, "code" .= code, "request" .= originalRequest]
+instance ToJSON Result where
+    toJSON (Result job body code) =
+        object ["body" .= body, "code" .= code, "job" .= job]
 
 main :: IO ()
 main = do
@@ -46,7 +46,7 @@ command = do
     args <- getArgs
     case args of
         (cmd:[]) -> return cmd
-        otherwise -> error "usage: akkorokamui [command]"
+        _ -> error "usage: akkorokamui [command]"
 
 createConsumer :: IO ()
 createConsumer = do
@@ -56,17 +56,19 @@ createConsumer = do
 
     setupQueues chan
 
-    getLine -- wait for keypress
+    _ <- getLine -- wait for keypress
     closeConnection conn
     putStrLn "connection closed"
 
+setupQueues :: Channel -> IO ()
 setupQueues chan = do
-    declareQueue chan newQueue { queueName = processQueueName }
-    declareQueue chan newQueue { queueName = resultsQueueName }
+    _ <- declareQueue chan newQueue { queueName = processQueueName }
+    _ <- declareQueue chan newQueue { queueName = resultsQueueName }
     declareExchange chan newExchange {exchangeName = msgExchangeName, exchangeType = "topic"}
     bindQueue chan processQueueName msgExchangeName processExchangeKey
     bindQueue chan resultsQueueName msgExchangeName resultsExchangeKey
-    consumeMsgs chan processQueueName Ack consumerCallback
+    _ <- consumeMsgs chan processQueueName Ack consumerCallback
+    return ()
   where
     processQueueName = settingsProcessQueue settings
     resultsQueueName = settingsResultsQueue settings
@@ -79,24 +81,22 @@ consumerCallback (msg, env) = do
     putStrLn $ "started receiving from "
     putStrLn $ "received: " ++ (BL.unpack $ msgBody msg)
 
-    handleCrawlRequest env $ parseCrawlRequest message
+    handleJob env $ parseJob message
   where
     message = msgBody msg
 
-handleCrawlRequest env Nothing = do
+handleJob :: Envelope -> Maybe Job -> IO ()
+handleJob env Nothing = do
     putStrLn "bad request"
     ackEnv env
-
-handleCrawlRequest env (Just crawlRequest) = do
+handleJob env (Just job) = do
     (_, rsp) <- browse $ do
         --setProxy . fromJust $ parseProxy "127.0.0.1:8118"
         setAllowRedirects True
         setOutHandler $ const (return ())
-        request $ createRequest crawlRequest
+        request $ createJob job
 
-    putStrLn $ rspBody rsp
-
-    publishResult env crawlRequest rsp
+    publishResult env job rsp
 
     ackEnv env
 
@@ -104,43 +104,40 @@ parseRequestMethod :: String -> RequestMethod
 parseRequestMethod strMethod =
     case strMethod of
         "POST" -> POST
-        otherwise -> GET
+        _ -> GET
 
-createRequest :: CrawlRequest -> Request String
-createRequest crawlRequest =
+createJob :: Job -> Request String
+createJob job =
     Request
-        (fromJust $ parseURI $ url crawlRequest)
+        (fromJust $ parseURI $ jobUrl job)
         (parseRequestMethod "GET")
         []
         "Body"
 
-parseCrawlRequest :: BL.ByteString -> Maybe CrawlRequest
-parseCrawlRequest msg = decode msg :: Maybe CrawlRequest
+parseJob :: BL.ByteString -> Maybe Job
+parseJob msg = decode msg :: Maybe Job
 
-createCrawlResponse :: CrawlRequest -> Response String -> CrawlResponse
-createCrawlResponse crawlRequest response =
-    CrawlResponse
-        { originalRequest = crawlRequest
-        , body = pack $ rspBody response
-        , code = responseCode }
+createResult :: Job -> Response String -> Result
+createResult job response =
+    Result
+        { resultJob = job
+        , resultBody = pack $ rspBody response
+        , resultCode = responseCode }
   where
     (n1, n2, n3) = rspCode response
     responseCode = read $ foldl (++) "" $ fmap show [n1, n2, n3] :: Int
 
-publishResult :: Envelope -> CrawlRequest -> Response String -> IO ()
-publishResult env crawlRequest response = do
+publishResult :: Envelope -> Job -> Response String -> IO ()
+publishResult env job response = do
     publishMsg
         (envChannel env)
         msgExchangeName
         resultsExchangeKey
         (newMsg
-            { msgBody = encode $ createCrawlResponse crawlRequest response
+            { msgBody = encode $ createResult job response
             , msgDeliveryMode = Just NonPersistent
             }
         )
   where
-    processQueueName = settingsProcessQueue settings
-    resultsQueueName = settingsResultsQueue settings
     msgExchangeName = settingsExchange settings
-    processExchangeKey = settingsProcessExchangeKey settings
     resultsExchangeKey = settingsResultsExchangeKey settings
