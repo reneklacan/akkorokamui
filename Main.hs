@@ -23,25 +23,28 @@ data Settings = Settings
     , settingsResultsExchangeKey :: Text }
 
 data CrawlRequest = CrawlRequest
-    { url :: String
-    }
+    { url :: String }
 
 instance FromJSON CrawlRequest where
     parseJSON (Object v) = CrawlRequest <$> v .: "url"
     parseJSON _ = mzero
 
+instance ToJSON CrawlRequest where
+    toJSON (CrawlRequest url) =
+        object ["url" .= url]
+
 data CrawlResponse = CrawlResponse
-    { body :: Text
-    , code :: Int
-    }
+    { originalRequest :: CrawlRequest
+    , body :: Text
+    , code :: Int }
 
 instance ToJSON CrawlResponse where
-    toJSON (CrawlResponse body code) =
-        object ["body" .= body, "code" .= code]
+    toJSON (CrawlResponse originalRequest body code) =
+        object ["body" .= body, "code" .= code, "request" .= originalRequest]
 
 main :: IO ()
 main = do
-    parallel_ $ replicate 4 createConsumer
+    parallel_ $ replicate 10 createConsumer
     stopGlobalPool
 
 command :: IO (String)
@@ -87,7 +90,6 @@ setupQueues chan = do
     processExchangeKey = settingsProcessExchangeKey settings
     resultsExchangeKey = settingsResultsExchangeKey settings
 
-
 consumerCallback :: (Message, Envelope) -> IO ()
 consumerCallback (msg, env) = do
     putStrLn $ "started receiving from "
@@ -101,7 +103,7 @@ consumerCallback (msg, env) = do
 
     putStrLn $ rspBody rsp
 
-    publishResult env rsp
+    publishResult env crawlRequest rsp
 
     ackEnv env
   where
@@ -125,27 +127,34 @@ createRequest crawlRequest =
 parseCrawlRequest :: BL.ByteString -> CrawlRequest
 parseCrawlRequest msg =
     case (decode msg :: Maybe CrawlRequest) of
-      Just cr -> cr
-      Nothing -> error "Failed to parse crawl request"
+        Just cr -> cr
+        Nothing -> error "Failed to parse crawl request"
 
-createCrawlResponse :: Response String -> CrawlResponse
-createCrawlResponse response =
+createCrawlResponse :: CrawlRequest -> Response String -> CrawlResponse
+createCrawlResponse crawlRequest response =
     CrawlResponse
-        { body = pack $ rspBody response
-        , code = responseCode
-        }
+        { originalRequest = crawlRequest
+        , body = pack $ rspBody response
+        , code = responseCode }
   where
     (n1, n2, n3) = rspCode response
     responseCode = read $ foldl (++) "" $ fmap show [n1, n2, n3] :: Int
 
-publishResult :: Envelope -> Response String -> IO ()
-publishResult env response = do
+publishResult :: Envelope -> CrawlRequest -> Response String -> IO ()
+publishResult env crawlRequest response = do
     publishMsg
         (envChannel env)
-        "test_exchange"
-        "result"
+        msgExchangeName
+        resultsExchangeKey
         (newMsg
-            { msgBody = encode $ createCrawlResponse response
+            { msgBody = encode $ createCrawlResponse crawlRequest response
             , msgDeliveryMode = Just NonPersistent
             }
         )
+  where
+    settings = defaultSettings
+    processQueueName = settingsProcessQueue settings
+    resultsQueueName = settingsResultsQueue settings
+    msgExchangeName = settingsExchange settings
+    processExchangeKey = settingsProcessExchangeKey settings
+    resultsExchangeKey = settingsResultsExchangeKey settings
