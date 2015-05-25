@@ -95,6 +95,15 @@ consumerCallback (msg, env) = do
     putStrLn $ "started receiving from "
     putStrLn $ "received: " ++ (BL.unpack $ msgBody msg)
 
+    handleCrawlRequest env $ parseCrawlRequest message
+  where
+    message = msgBody msg
+
+handleCrawlRequest env Nothing = do
+    putStrLn "bad request"
+    ackEnv env
+
+handleCrawlRequest env (Just crawlRequest) = do
     (_, rsp) <- browse $ do
         --setProxy . fromJust $ parseProxy "127.0.0.1:8118"
         setAllowRedirects True
@@ -106,9 +115,6 @@ consumerCallback (msg, env) = do
     publishResult env crawlRequest rsp
 
     ackEnv env
-  where
-    message = msgBody msg
-    crawlRequest = parseCrawlRequest message
 
 parseRequestMethod :: String -> RequestMethod
 parseRequestMethod strMethod =
@@ -124,11 +130,8 @@ createRequest crawlRequest =
         []
         "Body"
 
-parseCrawlRequest :: BL.ByteString -> CrawlRequest
-parseCrawlRequest msg =
-    case (decode msg :: Maybe CrawlRequest) of
-        Just cr -> cr
-        Nothing -> error "Failed to parse crawl request"
+parseCrawlRequest :: BL.ByteString -> Maybe CrawlRequest
+parseCrawlRequest msg = decode msg :: Maybe CrawlRequest
 
 createCrawlResponse :: CrawlRequest -> Response String -> CrawlResponse
 createCrawlResponse crawlRequest response =
